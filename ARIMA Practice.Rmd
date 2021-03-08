@@ -1,0 +1,412 @@
+---
+title: "Stock Price Prediction using Machine Learning Practice"
+author: "Anyi Fu"
+date: "09/02/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+##install.packages(c('quantmod', 'moments'))
+library(tidyquant)
+library(ggplot2)
+library(quantmod)
+library(forecast)
+library(urca)
+library(tseries)
+library(timeSeries)
+library(forecast)
+library(xts)
+library("TTR")
+library(forecast, quietly = T)
+
+getSymbols("SHOP", from = '2017-01-01',
+           to = "2021-12-31",warnings = FALSE,
+           auto.assign = TRUE)
+
+adj_prices = na.omit(SHOP[,6])
+SHOP_Ori <- SHOP
+
+```
+
+# Explore Data
+
+```{r cars}
+summary(SHOP)
+p1 = chart_Series(SHOP)
+
+p1
+#The data is clearly non-stationary, hence we will find the log returns of it
+```
+
+
+```{r }
+##MA
+
+SHOP <- subset(SHOP_Ori, index(SHOP_Ori) >= "2019-01-01")
+##two MA using 10 and 30 days of windows,
+SHOP_mm10 <- rollmean(SHOP[,6], 10, fill = list(NA, NULL, NA), align = "right")
+SHOP_mm30 <- rollmean(SHOP[,6], 30, fill = list(NA, NULL, NA), align = "right")
+
+
+ggplot(SHOP, aes(x = index(SHOP))) +
+  geom_line(aes(y = SHOP[,6], color = "PBR")) + ggtitle("Shopify prices series 2019-2021") +
+  geom_line(aes(y = SHOP_mm10, color = "MM10")) +
+  geom_line(aes(y = SHOP_mm30, color = "MM30")) + xlab("Date") + ylab("Price") +
+  theme(plot.title = element_text(hjust = 0.5), panel.border = element_blank()) +
+  scale_x_date(date_labels = "%b %y", date_breaks = "3 months") +
+  scale_colour_manual("Series", values=c("PBR"="gray40", "MM10"="firebrick4", "MM30"="darkcyan"))
+
+```
+
+```{R}
+
+myTheme<-chart_theme()
+myTheme$col$up.col<-'darkgreen'
+myTheme$col$dn.col<-'darkred'
+myTheme$col$dn.border <- 'black'
+myTheme$col$up.border <- 'black'
+myTheme$rylab <- FALSE
+myTheme$col$grid <- "lightgrey"
+
+p2 = chart_Series(SHOP['2020-12/2021-02'], theme = myTheme)
+SHOP_Ori <- SHOP
+p2
+```
+
+
+```{R}
+SHOP %>%
+    chartSeries(TA='addBBands();
+                    addBBands(draw="p");
+                    addVo();
+                    addMACD()', 
+                subset='2020/2021',
+                theme="white"
+                ) 
+```
+
+# Return and log Return
+
+```{r }
+return = diff(adj_prices,lag=1)
+plot(return)
+
+acf(return[2:length(return)])
+pacf(return[2:length(return)])
+
+# The series is obviously not stationary
+```
+
+
+```{R}
+# Compute the log returns for the stock
+logR = diff(log(adj_prices),lag=1)
+logR = logR[!is.na(logR)]
+# Plot log returns 
+plot(logR,type='l', main='log returns plot')
+```
+
+
+```{r}
+#diff logR#
+
+return_diff1 = diff(return,lag=1)
+return_diff1 = return_diff1[!is.na(return_diff1)]
+# Plot log returns 
+plot(return_diff1,type='l', main='returns with 1 difference plot')
+
+acf(return_diff1)
+pacf(return_diff1)
+
+logR_diff1 = diff(logR,lag=1)
+logR_diff1 = logR_diff1[!is.na(logR_diff1)]
+# Plot log returns 
+plot(logR_diff1,type='l', main='log returns with 1 difference plot')
+
+acf(logR_diff1)
+pacf(logR_diff1)
+
+```
+
+
+```{R}
+summary(logR)
+skewness(logR)
+kurtosis(logR)
+#skewness is -0.4351852 which implies a slightly negative skewness
+#kurtosis is 5.799651 which is much higher than 3 since it is a log function
+```
+
+
+```{R}
+#Trend
+##Check for the trend
+summary(ur.df(logR, type='trend', lags=20, selectlags="BIC"))
+
+logR_mm10 <- rollmean(logR, 10, fill = list(NA, NULL, NA), align = "right")
+logR_mm30 <- rollmean(logR, 30, fill = list(NA, NULL, NA), align = "right")
+## weights for moving avg
+
+
+```
+
+```{R}
+#Decomposition
+
+logR_ts <- ts(logR,frequency = 216 , start = 2017 )
+logR_de <- decompose(logR_ts)
+plot(logR_de)
+
+```
+
+
+
+
+
+```{R}
+
+acf(logR,lag.max = 40)
+pacf(logR,lag.max = 40)
+logR %>% ggtsdisplay(main="")
+
+
+## For AR models, the ACF will dampen exponentially and the PACF plot will be used to identify the order (p) of the AR model. For MA models, the PACF will dampen exponentially and the ACF plot will be used to identify the order (q) of the MA model.
+
+```
+
+```{r}
+#the Augmented Dickey-Fuller test, the Phillips-Perron unit root test and the KPSS test for stationarity
+
+ndiffs(logR)
+
+adf.test(logR); pp.test(logR); kpss.test(logR)
+
+
+# The null hypothesis is rejected for ADF and Unit Root test
+# For KPSS test, the null hypothesis of stationarity around a trend is not rejected since the p-value is greater than printerd p-value 0.1.
+# Hence we can conclude that the series is stationary
+```
+
+# Fit ARIMA Model
+
+
+
+```{R}
+#AIC Table
+
+aicc_table = function(dataset,P,Q){
+  table = matrix(NA,(P+1),(Q+1))
+  for (p in 0:P){
+    for (q in 0:Q){
+      table[p+1,q+1] = Arima(dataset,order=c(p,0,q))$aicc
+    }
+  }
+  dimnames(table) = list(paste("<b> AR",0:P,"</b>",sep=""),paste("MA",0:Q,sep=""))
+  table
+}
+
+```
+
+
+```{R}
+
+logR_aicc_table = aicc_table(logR,10,10)
+require(knitr)
+kable(logR_aicc_table,digits=2)
+
+## The lowest one is at AR6 & MA7, so try ARIMA(6,0,7)
+
+##The AIC works as such: Some models, such as ARIMA(3,1,3), may offer better fit than ARIMA(2,1,3), but that fit is not worth the loss in parsimony imposed by the addition of additional AR and MA lags. 
+
+```
+
+```{r}
+m1.logR=Arima(logR,order=c(6,0,7))
+summary(m1.logR)
+#non-seasonal
+tsdiag(m1.logR,gof=15,omit.initial=FALSE)
+
+#p-value is stable & high
+
+```
+
+
+```{R}
+#plot of residuals for diagnostic analysis: White Noise, etc.
+tsdisplay(m1.logR$residuals)
+
+# From acf: no significant autocorrelation - hence white noise series
+```
+
+
+
+# Further Exploration - 14 Days
+
+
+```{R}
+
+
+## Here we choose training data : testing data = .9 : .1
+
+logR1 <- logR[(0.6*length(logR)): length(logR)]
+logR_train <- logR1[1:((0.9)*length(logR1))]
+logR_test <- logR1[(0.9*length(logR1)):length(logR1)]
+arima_train <- Arima(logR_train, order = c(6,0,7))
+pred <- predict(arima_train, n.ahead = (length(logR1)-(0.9*length(logR1)) + 1))$pred
+forecast <- forecast(arima_train, h = 14)
+plot(forecast)
+
+##The heavy gray bar and light gray bar separately represent the 99% and 95% confidence interval for the forecast. 
+
+accuracy(pred,logR_test) 
+
+
+### I chose logR[(0.43*length(logR)): length(logR)] this portion to be the dataset which can return a relatively low Root Mean Squared Error value
+### MAE and RMSE are two of the most common metrices to measure accuracy for continuous variable
+### Still need to be interpreted: which metric should we use?
+### ( FYI RMSE is used by the sample I referred)
+
+
+```
+
+
+```{r}
+##Trying to convert log-returns to actual prices
+
+
+## Add new dates
+addDate = function(lastDate, num){
+  dayList <- vector(mode = "list")
+  dayList[1] = format(lastDate, "%Y-%m-%d")
+  
+  for (n in 1:num){
+    if (n == 1) {
+      newDate = as.Date(paste(dayList[n])) + 1
+   }
+    else {
+      newDate = as.Date.numeric(as.numeric(dayList[n])) + 1
+    }
+   if (weekdays(newDate) == "Saturday") {
+     dayList[n+1] = newDate + 2
+   }
+   else if (weekdays(newDate) == "Sunday") {
+     dayList[n+1] = newDate + 1
+    }
+   else { 
+      dayList[n+1] = newDate 
+   }
+  }
+   as.Date.numeric(as.numeric(dayList[2:length(dayList)]))
+}
+```
+
+```{r}
+## Find actual prices
+actPrice = function(lastPrice, logReturns){
+  pList <- vector(mode = "list", length = length(logReturns) + 1)
+  pList[1] = as.numeric(lastPrice)
+  
+  for (n in 1:length(logReturns)){
+    newP = exp(log(as.numeric(pList[n])) + as.numeric(logReturns[n]))
+    pList[n+1] = newP
+  }
+   pList[2:length(pList)]
+}
+
+```
+
+```{r}
+lastAdj = SHOP$SHOP.Adjusted[length(SHOP$SHOP.Adjusted)]
+lastMax =SHOP$SHOP.High[length(SHOP$SHOP.Adjusted)]
+lastMin = SHOP$SHOP.Low[length(SHOP$SHOP.Adjusted)]
+
+pList_Adj = actPrice(lastAdj, forecast$mean )
+pList_Max = actPrice(lastMax, forecast$upper[,1] ) #here we chose Hi 80%
+pList_Min = actPrice(lastMin, forecast$lower[,1] ) # and Lo 80%
+
+SHOP_prices <- SHOP
+SHOP_prices$SHOP.Close = NULL
+SHOP_prices$SHOP.Open = NULL
+SHOP_prices$SHOP.Volume = NULL
+
+lastDate = index(adj_prices)[length(adj_prices)]
+days_pred = addDate(lastDate, 14)
+
+
+df_ini <- data.frame(Date = days_pred,
+                 Name = rep(c("SHOP.High", "SHOP.Low","SHOP.Adjusted"), each = 14),
+                 X = rnorm(42))
+zdf <- read.zoo(file = df_ini,split = "Name")
+zdf$SHOP.Adjusted <- as.numeric(pList_Adj)
+zdf$SHOP.High <- as.numeric(pList_Max)
+zdf$SHOP.Low <- as.numeric(pList_Min)
+new_prices = rbind(SHOP_prices, zdf)
+
+tail(new_prices)
+
+
+```
+
+```{R}
+fig <- plot(new_prices['2020-12/2021-03'], col = c('palegreen3','salmon','orange'), 
+            main = "Upcoming 7 Days Price Range Prediction for SHOP")
+addLegend("topleft", 
+              legend.names=c("Max. Price", "Min. Price", "Adj. Price"),
+              col=c('palegreen3','salmon','orange'),
+              lty=c(1,1,1),
+              lwd=c(2,2,2),
+              bg="white")
+
+```
+
+
+
+
+
+
+
+
+# Using KNN to predict if stock price will increase
+
+```{r}
+
+if(!require(tsfknn)) install.packages("tsfknn")
+library(tsfknn)
+
+```
+
+
+```{r}
+predknn <- knn_forecasting(as.numeric(logR), h = 30, lags = 1:30, k = 33, msas = "MIMO")
+
+ro <- rolling_origin(predknn)
+
+print(ro$global_accu)
+plot(predknn)
+```
+
+```{r}
+pred_knn <- predknn$prediction
+
+lastDate = index(adj_prices)[length(adj_prices)]
+days_pred_knn = addDate(lastDate, length(pList_Adj_knn))
+pList_Adj_knn = actPrice(lastAdj, pred_knn)
+
+df_ini_knn <- data.frame(Date = days_pred_knn,
+                 'SHOP.Adjusted'= as.numeric(pList_Adj_knn))
+zdf_knn <- read.zoo(file = df_ini_knn)
+
+new_prices_knn = rbind(adj_prices, zdf_knn)
+
+fig <- plot(new_prices_knn['2020-12/2021-03'], col = 'salmon',, 
+            main = "Upcoming 7 Days Spot Price Prediction for SHOP")
+addLegend("topleft", 
+              legend.names= "Adj. Price",
+              col='salmon',
+              lty=1,
+              lwd=2,
+              bg="white")
+
+
+```
+
